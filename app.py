@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # 여기가 바뀌었습니다!
 import json
 
 # 1. 페이지 설정
@@ -19,7 +19,6 @@ def check_password():
     password = st.text_input("비밀번호를 입력하세요", type="password")
     
     if st.button("로그인"):
-        # Secrets 설정이 없거나 틀렸을 때를 대비한 안전장치
         if "PASSWORD" in st.secrets and password == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
             st.rerun()
@@ -30,29 +29,35 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- ☁️ 구글 시트 연결 설정 (업그레이드됨!) ---
+# --- ☁️ 구글 시트 연결 설정 (최신 google-auth 방식) ---
 @st.cache_resource
 def get_google_sheet_connection():
     try:
-        # Secrets에서 gcp_json 문자열 가져오기
+        # Secrets 설정 확인
         if "gcp_json" not in st.secrets:
-            st.error("⚠️ Secrets 설정에 'gcp_json'이 없습니다. 설정을 확인해주세요.")
+            st.error("⚠️ Secrets 설정에 'gcp_json'이 없습니다.")
             return None
 
+        # JSON 문자열을 사전(Dictionary)으로 변환
         json_string = st.secrets["gcp_json"]
-        
-        # ⭐ 핵심 수정: strict=False 옵션을 넣어 줄바꿈 에러 자동 해결 ⭐
         credentials_dict = json.loads(json_string, strict=False)
         
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+        # 권한 설정 (Scope)
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        
+        # ⭐ 여기가 최신 방식으로 변경됨 ⭐
+        creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
         client = gspread.authorize(creds)
         
         # 엑셀 파일 열기
         sh = client.open("비즈니스_데이터베이스")
         return sh
+        
     except Exception as e:
-        st.error(f"⚠️ 연결 오류 발생! 설정을 확인해주세요.\n에러 내용: {e}")
+        st.error(f"⚠️ 연결 오류 발생!\n에러 내용: {e}")
         return None
 
 # 연결 시도
@@ -60,18 +65,17 @@ sh = get_google_sheet_connection()
 if sh is None:
     st.stop()
 
-# 시트 가져오기 (이름 틀림 방지)
+# 시트 가져오기
 try:
     worksheet_customers = sh.worksheet("고객목록")
     worksheet_history = sh.worksheet("상담기록")
     worksheet_todo = sh.worksheet("할일목록")
 except:
-    st.error("엑셀 시트 아래쪽 탭 이름이 '고객목록', '상담기록', '할일목록' 인지 꼭 확인해주세요!")
+    st.error("엑셀 시트 탭 이름(고객목록, 상담기록, 할일목록)을 확인해주세요!")
     st.stop()
 
 # --- 데이터 읽기/쓰기 도우미 함수 ---
 def read_data(worksheet):
-    # 데이터가 없을 때 에러 방지
     try:
         data = worksheet.get_all_records()
         return pd.DataFrame(data)
