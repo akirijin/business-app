@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import gspread
-from google.oauth2.service_account import Credentials # ⭐ 최신 부품 사용
+from google.oauth2.service_account import Credentials # ⭐ 여기가 핵심입니다!
 import json
 
 # 1. 페이지 설정
@@ -19,13 +19,11 @@ def check_password():
     password = st.text_input("비밀번호를 입력하세요", type="password")
     
     if st.button("로그인"):
-        # Secrets에 PASSWORD가 있는지 확인
         if "PASSWORD" in st.secrets and password == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
             st.rerun()
-        # 개발 중 비밀번호 설정을 까먹었을 때를 위한 안전장치
         elif "PASSWORD" not in st.secrets:
-             st.warning("⚠️ Secrets에 PASSWORD 설정이 없습니다. (임시 로그인 허용)")
+             st.warning("⚠️ Secrets에 PASSWORD 설정이 없습니다.")
              st.session_state["password_correct"] = True
              st.rerun()
         else:
@@ -41,20 +39,20 @@ def get_google_sheet_connection():
     try:
         # Secrets 설정 확인
         if "gcp_json" not in st.secrets:
-            st.error("⚠️ Secrets 설정에 'gcp_json'이 없습니다. Streamlit Cloud 설정을 확인해주세요.")
+            st.error("⚠️ Secrets 설정 오류: 'gcp_json'이 없습니다.")
             return None
 
-        # JSON 문자열을 사전(Dictionary)으로 변환
+        # JSON 문자열 변환
         json_string = st.secrets["gcp_json"]
         credentials_dict = json.loads(json_string, strict=False)
         
-        # 권한 설정 (Scope)
+        # 권한 설정
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
             'https://www.googleapis.com/auth/drive'
         ]
         
-        # ⭐ 여기가 최신 방식으로 변경됨 (핵심 해결책) ⭐
+        # ⭐ 최신 인증 방식 연결 ⭐
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
         client = gspread.authorize(creds)
         
@@ -77,7 +75,7 @@ try:
     worksheet_history = sh.worksheet("상담기록")
     worksheet_todo = sh.worksheet("할일목록")
 except:
-    st.error("엑셀 시트 탭 이름(고객목록, 상담기록, 할일목록)을 확인해주세요!")
+    st.error("구글 시트의 탭 이름(고객목록, 상담기록, 할일목록)이 정확한지 확인해주세요!")
     st.stop()
 
 # --- 데이터 읽기/쓰기 도우미 함수 ---
@@ -114,7 +112,6 @@ menu = st.sidebar.radio("이동하기", ["📇 비즈니스 카드", "✅ 할 �
 if menu == "📇 비즈니스 카드":
     st.title("📇 비즈니스 카드 시스템")
     
-    # 헤더 자동 생성
     if not worksheet_customers.row_values(1):
         worksheet_customers.append_row(["고객명", "담당자", "등록일"])
     if not worksheet_history.row_values(1):
@@ -127,21 +124,19 @@ if menu == "📇 비즈니스 카드":
         with st.form("new_customer"):
             new_name = st.text_input("고객명 (업체명)")
             manager_info = st.text_input("담당자 (연락처)")
-            submitted = st.form_submit_button("등록하기")
-
-            if submitted and new_name:
-                df = read_data(worksheet_customers)
-                if not df.empty and "고객명" in df.columns and new_name in df["고객명"].values:
-                    st.error("이미 등록된 고객입니다.")
-                else:
-                    append_data(worksheet_customers, [new_name, manager_info, str(datetime.now().date())])
-                    st.success(f"'{new_name}' 저장 완료!")
-                    st.rerun()
+            if st.form_submit_button("등록하기"):
+                if new_name:
+                    df = read_data(worksheet_customers)
+                    if not df.empty and "고객명" in df.columns and new_name in df["고객명"].values:
+                        st.error("이미 등록된 고객입니다.")
+                    else:
+                        append_data(worksheet_customers, [new_name, manager_info, str(datetime.now().date())])
+                        st.success(f"'{new_name}' 저장 완료!")
+                        st.rerun()
 
     with tab2:
         st.subheader("상담 기록 관리")
         df_customers = read_data(worksheet_customers)
-        
         if df_customers.empty:
             st.info("등록된 고객이 없습니다.")
         else:
@@ -172,7 +167,6 @@ if menu == "📇 비즈니스 카드":
 # --- 기능 2: 할 일 목록 ---
 elif menu == "✅ 할 일 목록":
     st.title("✅ 오늘의 할 일")
-    
     if not worksheet_todo.row_values(1):
         worksheet_todo.append_row(["업무", "상태"])
 
@@ -191,7 +185,6 @@ elif menu == "✅ 할 일 목록":
             if checked != is_done:
                 update_checkbox(worksheet_todo, row["업무"], checked)
                 st.rerun()
-        
         if st.button("완료된 항목 삭제"):
             delete_completed_todos(worksheet_todo)
             st.rerun()
