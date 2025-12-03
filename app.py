@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import gspread
-from google.oauth2.service_account import Credentials # 여기가 바뀌었습니다!
+from google.oauth2.service_account import Credentials # ⭐ 최신 부품 사용
 import json
 
 # 1. 페이지 설정
-st.set_page_config(page_title="비즈니스 파트너 (Google)", layout="wide")
+st.set_page_config(page_title="비즈니스 파트너", layout="wide")
 
 # --- 🔐 비밀번호 확인 기능 ---
 def check_password():
@@ -19,9 +19,15 @@ def check_password():
     password = st.text_input("비밀번호를 입력하세요", type="password")
     
     if st.button("로그인"):
+        # Secrets에 PASSWORD가 있는지 확인
         if "PASSWORD" in st.secrets and password == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
             st.rerun()
+        # 개발 중 비밀번호 설정을 까먹었을 때를 위한 안전장치
+        elif "PASSWORD" not in st.secrets:
+             st.warning("⚠️ Secrets에 PASSWORD 설정이 없습니다. (임시 로그인 허용)")
+             st.session_state["password_correct"] = True
+             st.rerun()
         else:
             st.error("비밀번호가 틀렸습니다.")
     return False
@@ -35,7 +41,7 @@ def get_google_sheet_connection():
     try:
         # Secrets 설정 확인
         if "gcp_json" not in st.secrets:
-            st.error("⚠️ Secrets 설정에 'gcp_json'이 없습니다.")
+            st.error("⚠️ Secrets 설정에 'gcp_json'이 없습니다. Streamlit Cloud 설정을 확인해주세요.")
             return None
 
         # JSON 문자열을 사전(Dictionary)으로 변환
@@ -48,7 +54,7 @@ def get_google_sheet_connection():
             'https://www.googleapis.com/auth/drive'
         ]
         
-        # ⭐ 여기가 최신 방식으로 변경됨 ⭐
+        # ⭐ 여기가 최신 방식으로 변경됨 (핵심 해결책) ⭐
         creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
         client = gspread.authorize(creds)
         
