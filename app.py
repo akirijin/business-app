@@ -1,148 +1,188 @@
 import streamlit as st
 import pandas as pd
-import os
 from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import json # JSON 처리를 위한 도구
 
 # 1. 페이지 설정
-st.set_page_config(page_title="비즈니스 파트너", layout="wide")
+st.set_page_config(page_title="비즈니스 파트너 (Google)", layout="wide")
 
-# --- 🔐 비밀번호 확인 기능 (새로 추가됨) ---
+# --- 🔐 비밀번호 확인 기능 ---
 def check_password():
-    """비밀번호가 맞는지 확인하는 함수"""
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
-
     if st.session_state["password_correct"]:
-        return True # 이미 로그인 성공함
-
-    # 비밀번호 입력창 보여주기
+        return True
+    
     st.title("🔒 로그인이 필요합니다")
     password = st.text_input("비밀번호를 입력하세요", type="password")
     
     if st.button("로그인"):
-        # st.secrets는 클라우드에 저장된 비밀번호를 가져옵니다
+        # Secrets에 설정된 PASSWORD와 비교
         if password == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
-            st.rerun() # 화면 새로고침해서 앱 보여주기
+            st.rerun()
         else:
             st.error("비밀번호가 틀렸습니다.")
     return False
 
 if not check_password():
-    st.stop() # 비밀번호 틀리면 여기서 멈춤 (아래 코드 실행 안 함)
-# -------------------------------------------
+    st.stop()
 
-# 고객 데이터가 저장될 메인 폴더 생성
-BASE_DIR = "고객폴더"
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR)
+# --- ☁️ 구글 시트 연결 설정 (핵심 부분) ---
+@st.cache_resource
+def get_google_sheet_connection():
+    try:
+        # Secrets에서 gcp_json 문자열을 가져와서 진짜 JSON(사전)으로 변환
+        json_string = st.secrets["gcp_json"]
+        credentials_dict = json.loads(json_string)
+        
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # 엑셀 파일 열기
+        sh = client.open("비즈니스_데이터베이스")
+        return sh
+    except Exception as e:
+        st.error(f"⚠️ 연결 오류 발생! 설정을 확인해주세요.\n에러 내용: {e}")
+        return None
 
-# 데이터 불러오기/저장하기 함수
-def load_data(filepath, columns):
-    if not os.path.exists(filepath):
-        return pd.DataFrame(columns=columns)
-    return pd.read_csv(filepath)
+# 연결 시도
+sh = get_google_sheet_connection()
+if sh is None:
+    st.stop()
 
-def save_data(df, filepath):
-    df.to_csv(filepath, index=False)
+# 시트 가져오기 (없으면 에러 방지용으로 빈 껍데기 사용)
+try:
+    worksheet_customers = sh.worksheet("고객목록")
+    worksheet_history = sh.worksheet("상담기록")
+    worksheet_todo = sh.worksheet("할일목록")
+except:
+    st.error("엑셀 시트 탭 이름이 '고객목록', '상담기록', '할일목록' 인지 확인해주세요!")
+    st.stop()
 
-# 사이드바 메뉴
-st.sidebar.title("사장님 메뉴")
-menu = st.sidebar.radio("이동하기", ["📇 비즈니스 카드 (고객관리)", "✅ 할 일 목록"])
+# --- 데이터 읽기/쓰기 도우미 함수 ---
+def read_data(worksheet):
+    data = worksheet.get_all_records()
+    return pd.DataFrame(data)
 
-# --- 기능 1: 비즈니스 카드 (고객 관리 시스템) ---
-if menu == "📇 비즈니스 카드 (고객관리)":
+def append_data(worksheet, row_data):
+    worksheet.append_row(row_data)
+
+def update_checkbox(worksheet, task_name, new_status):
+    try:
+        cell = worksheet.find(task_name)
+        # 상태가 있는 열(B열) 업데이트. (TRUE/FALSE 문자열로 저장)
+        worksheet.update_cell(cell.row, 2, "TRUE" if new_status else "FALSE")
+    except:
+        pass # 못 찾으면 패스
+
+def delete_completed_todos(worksheet):
+    data = worksheet.get_all_values()
+    if not data: return
+    headers = data[0]
+    # 완료(TRUE)가 아닌 것만 남기기
+    new_rows = [headers] + [row for row in data[1:] if len(row) > 1 and row[1] != "TRUE"]
+    
+    worksheet.clear()
+    worksheet.update(new_rows)
+
+# --- 사이드바 메뉴 ---
+st.sidebar.title("☁️ 사장님 메뉴")
+menu = st.sidebar.radio("이동하기", ["📇 비즈니스 카드", "✅ 할 일 목록"])
+
+# --- 기능 1: 비즈니스 카드 ---
+if menu == "📇 비즈니스 카드":
     st.title("📇 비즈니스 카드 시스템")
+    
+    # 엑셀 첫 줄(헤더)이 비어있으면 자동으로 채워넣기
+    if not worksheet_customers.row_values(1):
+        worksheet_customers.append_row(["고객명", "담당자", "등록일"])
+    if not worksheet_history.row_values(1):
+        worksheet_history.append_row(["고객명", "날짜", "시간", "내용"])
 
-    tab1, tab2 = st.tabs(["🆕 신규 고객 등록", "📂 고객 검색 및 기록 추가"])
+    tab1, tab2 = st.tabs(["🆕 신규 고객 등록", "📂 고객 검색 및 기록"])
 
     # [탭 1] 신규 고객 등록
     with tab1:
         st.subheader("새로운 고객 등록")
-        with st.form("new_customer_form"):
+        with st.form("new_customer"):
             new_name = st.text_input("고객명 (업체명)")
             manager_info = st.text_input("담당자 (연락처)")
-            create_btn = st.form_submit_button("고객 폴더 생성")
+            submitted = st.form_submit_button("등록하기")
 
-            if create_btn and new_name:
-                customer_folder = os.path.join(BASE_DIR, new_name)
-                
-                if os.path.exists(customer_folder):
-                    st.error("이미 등록된 고객명입니다!")
+            if submitted and new_name:
+                df = read_data(worksheet_customers)
+                if not df.empty and new_name in df["고객명"].values:
+                    st.error("이미 등록된 고객입니다.")
                 else:
-                    os.makedirs(customer_folder)
-                    info_df = pd.DataFrame({'고객명': [new_name], '담당자': [manager_info], '등록일': [datetime.now().strftime('%Y-%m-%d')]})
-                    info_df.to_csv(os.path.join(customer_folder, "info.csv"), index=False)
-                    st.success(f"'{new_name}' 폴더가 생성되었습니다!")
-
-    # [탭 2] 기존 고객 검색 및 기록 추가
-    with tab2:
-        st.subheader("고객 기록 관리")
-        
-        customer_list = [f for f in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, f))]
-        
-        if not customer_list:
-            st.info("아직 등록된 고객이 없습니다.")
-        else:
-            selected_customer = st.selectbox("고객을 선택하세요", customer_list)
-            
-            current_folder = os.path.join(BASE_DIR, selected_customer)
-            history_file = os.path.join(current_folder, "history.csv")
-            
-            st.markdown(f"### ✏️ '{selected_customer}' 미팅/AS 기록")
-            with st.form("add_log_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    log_date = st.date_input("미팅, AS 날짜")
-                with col2:
-                    log_time = st.time_input("예약 시간")
-                
-                log_memo = st.text_area("미팅 내용 (메모)", height=100)
-                save_log = st.form_submit_button("기록 저장하기")
-
-                if save_log:
-                    df_history = load_data(history_file, ['날짜', '시간', '내용'])
-                    new_record = pd.DataFrame({'날짜': [log_date], '시간': [log_time], '내용': [log_memo]})
-                    df_history = pd.concat([df_history, new_record], ignore_index=True)
-                    save_data(df_history, history_file)
-                    st.success("기록이 저장되었습니다!")
+                    append_data(worksheet_customers, [new_name, manager_info, str(datetime.now().date())])
+                    st.success(f"'{new_name}' 저장 완료!")
                     st.rerun()
 
+    # [탭 2] 기록 관리
+    with tab2:
+        st.subheader("상담 기록 관리")
+        df_customers = read_data(worksheet_customers)
+        
+        if df_customers.empty:
+            st.info("등록된 고객이 없습니다.")
+        else:
+            customer_list = df_customers["고객명"].tolist()
+            selected_customer = st.selectbox("고객 선택", customer_list)
+            
+            # 입력 폼
+            with st.form("log_form"):
+                col1, col2 = st.columns(2)
+                d = st.date_input("날짜")
+                t = st.time_input("시간")
+                memo = st.text_area("내용")
+                if st.form_submit_button("기록 저장"):
+                    append_data(worksheet_history, [selected_customer, str(d), str(t), memo])
+                    st.success("저장되었습니다!")
+                    st.rerun()
+            
+            # 기록 보여주기
             st.divider()
-            st.markdown(f"### 📖 '{selected_customer}' 히스토리")
-            df_view = load_data(history_file, ['날짜', '시간', '내용'])
-            if not df_view.empty:
-                df_view = df_view.sort_values(by=['날짜', '시간'], ascending=False)
-                st.dataframe(df_view, use_container_width=True)
-            else:
-                st.info("아직 저장된 기록이 없습니다.")
+            df_history = read_data(worksheet_history)
+            if not df_history.empty:
+                my_history = df_history[df_history["고객명"] == selected_customer]
+                if not my_history.empty:
+                    # 최신순 정렬해서 보여주기
+                    st.dataframe(my_history[["날짜", "시간", "내용"]].sort_values("날짜", ascending=False), use_container_width=True)
+                else:
+                    st.info("기록이 없습니다.")
 
 # --- 기능 2: 할 일 목록 ---
 elif menu == "✅ 할 일 목록":
     st.title("✅ 오늘의 할 일")
     
-    new_task = st.text_input("새로운 업무 추가")
-    if st.button("추가"):
+    if not worksheet_todo.row_values(1):
+        worksheet_todo.append_row(["업무", "상태"])
+
+    # 할 일 추가
+    c1, c2 = st.columns([3, 1])
+    new_task = c1.text_input("새 업무", label_visibility="collapsed", placeholder="할 일 입력...")
+    if c2.button("추가"):
         if new_task:
-            file_todo = 'todo.csv'
-            df_todo = load_data(file_todo, ['업무', '상태'])
-            new_row = pd.DataFrame({'업무': [new_task], '상태': [False]})
-            df_todo = pd.concat([df_todo, new_row], ignore_index=True)
-            save_data(df_todo, file_todo)
+            append_data(worksheet_todo, [new_task, "FALSE"])
             st.rerun()
 
-    file_todo = 'todo.csv'
-    df_todo = load_data(file_todo, ['업무', '상태'])
-    
+    # 목록 보여주기
+    df_todo = read_data(worksheet_todo)
     if not df_todo.empty:
         for i, row in df_todo.iterrows():
-            done = st.checkbox(row['업무'], value=row['상태'], key=i)
-            if done != row['상태']:
-                df_todo.at[i, '상태'] = done
-                save_data(df_todo, file_todo)
+            is_done = (str(row["상태"]) == "TRUE")
+            # 체크박스
+            checked = st.checkbox(str(row["업무"]), value=is_done, key=f"todo_{i}")
+            if checked != is_done:
+                update_checkbox(worksheet_todo, row["업무"], checked)
                 st.rerun()
         
-        if st.button("완료된 업무 삭제"):
-            df_todo = df_todo[df_todo['상태'] == False]
-            save_data(df_todo, file_todo)
+        if st.button("완료된 항목 삭제"):
+            delete_completed_todos(worksheet_todo)
             st.rerun()
+    else:
+        st.info("할 일이 없습니다. ☕")

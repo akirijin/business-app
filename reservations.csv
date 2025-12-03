@@ -1,2 +1,4 @@
-날짜,시간,성함,연락처
-2025-12-08,13:30:00,ATBIO,
+streamlit
+pandas
+gspread
+oauth2client
